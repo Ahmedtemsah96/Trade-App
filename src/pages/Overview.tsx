@@ -1,36 +1,23 @@
-import Link from 'next/link';
-import { requireMember } from '@/lib/auth';
-import { withOrg } from '@/lib/db';
-import { money, compact, num, label, COST_TYPES, STAGES } from '@/lib/format';
-import Stat from '@/components/Stat';
-import MarginBar from '@/components/MarginBar';
-import SeedButton from '@/components/SeedButton';
+import { useLedger } from '../store';
+import { pnlRows } from '../ledger';
+import { money, compact, num, label, COST_TYPES, STAGES } from '../format';
+import { Stat, MarginBar, SeedButton } from '../components';
 
-export const dynamic = 'force-dynamic';
+export default function Overview() {
+  const ledger = useLedger();
+  const rows = pnlRows(ledger).sort((a, b) => (b.arrival_date ?? '').localeCompare(a.arrival_date ?? ''));
 
-export default async function Overview() {
-  const { orgId } = await requireMember();
-
-  const [pnl, costs] = await withOrg(orgId, (db) => Promise.all([
-    db.all('select * from container_pnl order by arrival_date desc nulls last'),
-    db.all('select cost_type, amount, fx_rate from cost_entries'),
-  ]));
-
-  const rows = pnl ?? [];
-  const totalCost = rows.reduce((a, r) => a + Number(r.total_cost), 0);
-  const totalRevenue = rows.reduce((a, r) => a + Number(r.total_revenue), 0);
-  const totalProfit = rows.reduce((a, r) => a + Number(r.net_profit), 0);
-  const totalLoss = rows.reduce((a, r) => a + Number(r.damage_loss), 0);
-  const cartons = rows.reduce((a, r) => a + Number(r.cartons_received), 0);
-  const sold = rows.reduce((a, r) => a + Number(r.cartons_sold), 0);
+  const totalCost = rows.reduce((a, r) => a + r.total_cost, 0);
+  const totalRevenue = rows.reduce((a, r) => a + r.total_revenue, 0);
+  const totalProfit = rows.reduce((a, r) => a + r.net_profit, 0);
+  const totalLoss = rows.reduce((a, r) => a + r.damage_loss, 0);
+  const cartons = rows.reduce((a, r) => a + r.cartons_received, 0);
+  const sold = rows.reduce((a, r) => a + r.cartons_sold, 0);
   const margin = totalRevenue > 0 ? (totalProfit / totalRevenue) * 100 : 0;
   const open = rows.filter((r) => r.stage !== 'closed').length;
 
-  // Cost mix — where the money actually goes
   const mix = new Map<string, number>();
-  (costs ?? []).forEach((c) => {
-    mix.set(c.cost_type, (mix.get(c.cost_type) ?? 0) + Number(c.amount) * Number(c.fx_rate));
-  });
+  ledger.costs.forEach((c) => mix.set(c.cost_type, (mix.get(c.cost_type) ?? 0) + c.amount * c.fx_rate));
   const mixRows = [...mix.entries()].sort((a, b) => b[1] - a[1]);
   const mixTotal = mixRows.reduce((a, [, v]) => a + v, 0) || 1;
 
@@ -43,12 +30,12 @@ export default async function Overview() {
           fermentation against it. Margin appears here as soon as a sale is recorded.
         </p>
         <div className="mt-8 flex flex-wrap gap-3">
-          <Link href="/containers" className="btn-primary">Register a container</Link>
+          <a href="#/containers" className="btn-primary">Register a container</a>
           <SeedButton />
         </div>
         <p className="mt-4 text-micro text-ink-faint">
           Sample data loads four containers with costs, sales and quality events so you can see how
-          the ledger behaves. You can delete it row by row afterwards.
+          the ledger behaves. You can remove it row by row afterwards.
         </p>
       </div>
     );
@@ -74,50 +61,34 @@ export default async function Overview() {
           sub="after insurer claims" tone={totalLoss > 0 ? 'clay' : 'ink'} />
       </section>
 
-      <div className="mt-10 grid gap-10 lg:grid-cols-[1.6fr_1fr]">
-        {/* Container ledger */}
+      <div className="mt-10 grid grid-cols-1 gap-10 lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)]">
         <section>
           <div className="mb-3 flex items-baseline justify-between">
             <h2 className="text-sm font-semibold">Container margin</h2>
-            <Link href="/containers" className="text-micro text-ink-faint underline underline-offset-2">
-              All containers
-            </Link>
+            <a href="#/containers" className="text-micro text-ink-faint underline underline-offset-2">All containers</a>
           </div>
           <div className="panel overflow-x-auto">
             <table className="w-full min-w-[640px]">
               <thead>
                 <tr>
-                  <th className="th">Container</th>
-                  <th className="th">Stage</th>
-                  <th className="th text-right">Cost / carton</th>
-                  <th className="th text-right">Net</th>
+                  <th className="th">Container</th><th className="th">Stage</th>
+                  <th className="th text-right">Cost / carton</th><th className="th text-right">Net</th>
                   <th className="th">Margin</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.slice(0, 10).map((r) => {
-                  const m = Number(r.total_revenue) > 0
-                    ? (Number(r.net_profit) / Number(r.total_revenue)) * 100 : 0;
+                  const m = r.total_revenue > 0 ? (r.net_profit / r.total_revenue) * 100 : 0;
                   return (
                     <tr key={r.id}>
                       <td className="td">
                         <span className="font-num">{r.container_number}</span>
-                        <span className="block text-micro text-ink-faint">
-                          {r.product_name ?? 'No product'} · {r.origin ?? '—'}
-                        </span>
+                        <span className="block text-micro text-ink-faint">{r.product_name ?? 'No product'} · {r.origin ?? '—'}</span>
                       </td>
                       <td className="td text-ink-soft">{label(STAGES, r.stage)}</td>
-                      <td className="td tnum text-right font-num">
-                        {r.cost_per_carton ? money(r.cost_per_carton) : '—'}
-                      </td>
-                      <td className={`td tnum text-right font-num ${
-                        Number(r.net_profit) >= 0 ? 'text-sage' : 'text-clay'}`}>
-                        {money(r.net_profit)}
-                      </td>
-                      <td className="td">
-                        {Number(r.total_revenue) > 0 ? <MarginBar pct={m} />
-                          : <span className="text-micro text-ink-faint">No sales yet</span>}
-                      </td>
+                      <td className="td tnum text-right font-num">{r.cost_per_carton ? money(r.cost_per_carton) : '—'}</td>
+                      <td className={`td tnum text-right font-num ${r.net_profit >= 0 ? 'text-sage' : 'text-clay'}`}>{money(r.net_profit)}</td>
+                      <td className="td">{r.total_revenue > 0 ? <MarginBar pct={m} /> : <span className="text-micro text-ink-faint">No sales yet</span>}</td>
                     </tr>
                   );
                 })}
@@ -126,7 +97,6 @@ export default async function Overview() {
           </div>
         </section>
 
-        {/* Cost mix */}
         <section>
           <h2 className="mb-3 text-sm font-semibold">Where the cost sits</h2>
           <div className="panel divide-y divide-paper-rule/60">
@@ -138,12 +108,8 @@ export default async function Overview() {
                     <span className="text-sm">{label(COST_TYPES, type)}</span>
                     <span className="tnum font-num text-sm">{money(amount)}</span>
                   </div>
-                  <div className="mt-2 h-1 bg-paper-rule/50">
-                    <div className="h-full bg-crate" style={{ width: `${share}%` }} />
-                  </div>
-                  <span className="tnum mt-1 block text-micro text-ink-faint">
-                    {share.toFixed(1)}% of landed cost
-                  </span>
+                  <div className="mt-2 h-1 bg-paper-rule/50"><div className="h-full bg-crate" style={{ width: `${share}%` }} /></div>
+                  <span className="tnum mt-1 block text-micro text-ink-faint">{share.toFixed(1)}% of landed cost</span>
                 </div>
               );
             })}

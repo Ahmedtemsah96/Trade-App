@@ -1,8 +1,10 @@
-node_modules
-.next
-out
-.env.local
+node_modules/
+dist/
+.next/
 .env
+.env.*
 .DS_Store
 *.log
 *.tsbuildinfo
+.vscode/
+.idea/
