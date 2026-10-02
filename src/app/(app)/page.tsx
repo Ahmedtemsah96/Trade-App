@@ -1,5 +1,6 @@
 import Link from 'next/link';
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { money, compact, num, label, COST_TYPES, STAGES } from '@/lib/format';
 import Stat from '@/components/Stat';
 import MarginBar from '@/components/MarginBar';
@@ -8,12 +9,12 @@ import SeedButton from '@/components/SeedButton';
 export const dynamic = 'force-dynamic';
 
 export default async function Overview() {
-  const supabase = createClient();
+  const { orgId } = await requireMember();
 
-  const [{ data: pnl }, { data: costs }] = await Promise.all([
-    supabase.from('container_pnl').select('*').order('arrival_date', { ascending: false, nullsFirst: false }),
-    supabase.from('cost_entries').select('cost_type, amount, fx_rate'),
-  ]);
+  const [pnl, costs] = await withOrg(orgId, (db) => Promise.all([
+    db.all('select * from container_pnl order by arrival_date desc nulls last'),
+    db.all('select cost_type, amount, fx_rate from cost_entries'),
+  ]));
 
   const rows = pnl ?? [];
   const totalCost = rows.reduce((a, r) => a + Number(r.total_cost), 0);

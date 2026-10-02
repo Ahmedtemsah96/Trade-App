@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { createVendor, deleteVendor, createPayment } from '@/app/actions';
 import { AddPanel, Field, Select, DeleteButton } from '@/components/Form';
 import Empty from '@/components/Empty';
@@ -8,13 +9,16 @@ import { money, label, VENDOR_KINDS } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function Vendors() {
-  const supabase = createClient();
-  const [{ data: balances }, { data: vendorList }, { data: payments }] = await Promise.all([
-    supabase.from('vendor_balances').select('*').order('name'),
-    supabase.from('vendors').select('id, name').order('name'),
-    supabase.from('vendor_payments')
-      .select('*, vendors(name)').order('payment_date', { ascending: false }).limit(50),
-  ]);
+  const { orgId } = await requireMember();
+  const [balances, vendorList, payments] = await withOrg(orgId, (db) => Promise.all([
+    db.all('select * from vendor_balances order by name'),
+    db.all('select id, name from vendors order by name'),
+    db.all(`select vp.*, v.name as vendor_name
+              from vendor_payments vp
+              join vendors v on v.id = vp.vendor_id
+             order by vp.payment_date desc, vp.created_at desc
+             limit 50`),
+  ]));
 
   const rows = balances ?? [];
   const payable = rows.reduce((a, r) => a + Math.max(Number(r.balance), 0), 0);
@@ -126,7 +130,7 @@ export default async function Vendors() {
                   {(payments ?? []).map((p) => (
                     <tr key={p.id}>
                       <td className="td tnum font-num text-ink-soft">{p.payment_date}</td>
-                      <td className="td">{(p.vendors as any)?.name ?? '—'}</td>
+                      <td className="td">{p.vendor_name ?? '—'}</td>
                       <td className="td text-ink-soft">{p.bank ?? '—'}</td>
                       <td className="td font-num text-micro text-ink-faint">{p.reference ?? '—'}</td>
                       <td className="td tnum text-right font-num">{money(p.amount)}</td>

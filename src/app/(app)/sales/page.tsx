@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { createSale, deleteSale } from '@/app/actions';
 import { AddPanel, Field, Select, DeleteButton } from '@/components/Form';
 import Empty from '@/components/Empty';
@@ -8,13 +9,15 @@ import { money, num } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function Sales() {
-  const supabase = createClient();
-  const [{ data: sales }, { data: containers }] = await Promise.all([
-    supabase.from('sales_entries')
-      .select('*, containers(container_number)')
-      .order('sale_date', { ascending: false }).limit(300),
-    supabase.from('containers').select('id, container_number').order('container_number'),
-  ]);
+  const { orgId } = await requireMember();
+  const [sales, containers] = await withOrg(orgId, (db) => Promise.all([
+    db.all(`select se.*, c.container_number
+              from sales_entries se
+              join containers c on c.id = se.container_id
+             order by se.sale_date desc, se.created_at desc
+             limit 300`),
+    db.all('select id, container_number from containers order by container_number'),
+  ]));
 
   const rows = sales ?? [];
   const revenue = rows.reduce((a, r) => a + Number(r.amount), 0);
@@ -78,7 +81,7 @@ export default async function Sales() {
                   {rows.map((r) => (
                     <tr key={r.id}>
                       <td className="td tnum font-num text-ink-soft">{r.sale_date}</td>
-                      <td className="td font-num">{(r.containers as any)?.container_number ?? '—'}</td>
+                      <td className="td font-num">{r.container_number ?? '—'}</td>
                       <td className="td">{r.customer_name ?? '—'}</td>
                       <td className="td font-num text-micro text-ink-faint">{r.invoice_number ?? '—'}</td>
                       <td className="td tnum text-right font-num">{num(r.cartons_sold)}</td>

@@ -1,17 +1,36 @@
 'use server';
 
-import { createClient } from '@/lib/supabase/server';
+import { currentMember } from '@/lib/auth';
+import { withOrg, type Db } from '@/lib/db';
 import { revalidatePath } from 'next/cache';
 
 /** Every write goes through here, so organization_id is stamped in one place. */
 async function scoped() {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) throw new Error('Not signed in');
-  const { data: member } = await supabase
-    .from('members').select('organization_id').eq('user_id', user.id).single();
-  if (!member) throw new Error('No workspace found for this account');
-  return { supabase, orgId: member.organization_id as string };
+  const member = await currentMember();
+  if (!member) throw new Error('Not signed in');
+  return member.orgId;
+}
+
+// Table and column names below only ever come from this file, never from
+// user input; values are always passed as parameters.
+type Row = Record<string, unknown>;
+
+async function insertMany(db: Db, table: string, rows: Row[], returning = 'id') {
+  // Rows may carry different keys; a key a row leaves out (or sets to
+  // undefined) gets the column's default, an explicit null stays null.
+  const cols = Array.from(new Set(rows.flatMap((r) => Object.keys(r))));
+  const values: unknown[] = [];
+  const tuples = rows.map((r) => `(${cols.map((c) => {
+    if (r[c] === undefined) return 'default';
+    values.push(r[c]);
+    return `$${values.length}`;
+  }).join(', ')})`);
+  const sql = `insert into ${table} (${cols.join(', ')}) values ${tuples.join(', ')} returning ${returning}`;
+  return db.all(sql, values);
+}
+
+async function insert(db: Db, table: string, row: Row) {
+  return (await insertMany(db, table, [row]))[0];
 }
 
 const n = (v: FormDataEntryValue | null) => (v === null || v === '' ? null : Number(v));
@@ -23,8 +42,8 @@ type Result = { error?: string };
 
 export async function createContainer(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('containers').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'containers', {
       organization_id: orgId,
       container_number: String(form.get('container_number')).trim().toUpperCase(),
       product_id: s(form.get('product_id')),
@@ -37,22 +56,20 @@ export async function createContainer(_: Result, form: FormData): Promise<Result
       stage: String(form.get('stage') || 'in_transit'),
       arrival_date: s(form.get('arrival_date')),
       notes: s(form.get('notes')),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/containers'); revalidatePath('/');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function updateContainerStage(id: string, stage: string) {
-  const { supabase } = await scoped();
-  await supabase.from('containers').update({ stage }).eq('id', id);
+  await withOrg(await scoped(), (db) =>
+    db.all('update containers set stage = $2 where id = $1', [id, stage]));
   revalidatePath('/containers'); revalidatePath('/');
 }
 
 export async function deleteContainer(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('containers').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from containers where id = $1', [id]));
   revalidatePath('/containers'); revalidatePath('/');
 }
 
@@ -60,8 +77,8 @@ export async function deleteContainer(id: string) {
 
 export async function createCost(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('cost_entries').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'cost_entries', {
       organization_id: orgId,
       container_id: String(form.get('container_id')),
       cost_type: String(form.get('cost_type')),
@@ -72,16 +89,14 @@ export async function createCost(_: Result, form: FormData): Promise<Result> {
       document_ref: s(form.get('document_ref')),
       description: s(form.get('description')),
       entry_date: s(form.get('entry_date')) ?? new Date().toISOString().slice(0, 10),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/costs'); revalidatePath('/'); revalidatePath('/containers');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function deleteCost(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('cost_entries').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from cost_entries where id = $1', [id]));
   revalidatePath('/costs'); revalidatePath('/');
 }
 
@@ -89,8 +104,8 @@ export async function deleteCost(id: string) {
 
 export async function createQuality(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('quality_events').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'quality_events', {
       organization_id: orgId,
       container_id: String(form.get('container_id')),
       event_type: String(form.get('event_type')),
@@ -100,16 +115,14 @@ export async function createQuality(_: Result, form: FormData): Promise<Result> 
       inspected_by: s(form.get('inspected_by')),
       notes: s(form.get('notes')),
       event_date: s(form.get('event_date')) ?? new Date().toISOString().slice(0, 10),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/quality'); revalidatePath('/');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function deleteQuality(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('quality_events').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from quality_events where id = $1', [id]));
   revalidatePath('/quality'); revalidatePath('/');
 }
 
@@ -117,8 +130,8 @@ export async function deleteQuality(id: string) {
 
 export async function createSale(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('sales_entries').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'sales_entries', {
       organization_id: orgId,
       container_id: String(form.get('container_id')),
       cartons_sold: n(form.get('cartons_sold')) ?? 0,
@@ -128,16 +141,14 @@ export async function createSale(_: Result, form: FormData): Promise<Result> {
       invoice_number: s(form.get('invoice_number')),
       sale_date: s(form.get('sale_date')) ?? new Date().toISOString().slice(0, 10),
       notes: s(form.get('notes')),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/sales'); revalidatePath('/'); revalidatePath('/containers');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function deleteSale(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('sales_entries').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from sales_entries where id = $1', [id]));
   revalidatePath('/sales'); revalidatePath('/');
 }
 
@@ -145,8 +156,8 @@ export async function deleteSale(id: string) {
 
 export async function createVendor(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('vendors').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'vendors', {
       organization_id: orgId,
       name: String(form.get('name')).trim(),
       kind: String(form.get('kind') || 'supplier'),
@@ -156,23 +167,21 @@ export async function createVendor(_: Result, form: FormData): Promise<Result> {
       phone: s(form.get('phone')),
       payment_terms_days: n(form.get('payment_terms_days')) ?? 30,
       opening_balance: n(form.get('opening_balance')) ?? 0,
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/vendors');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function deleteVendor(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('vendors').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from vendors where id = $1', [id]));
   revalidatePath('/vendors');
 }
 
 export async function createPayment(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('vendor_payments').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'vendor_payments', {
       organization_id: orgId,
       vendor_id: String(form.get('vendor_id')),
       amount: n(form.get('amount')) ?? 0,
@@ -180,8 +189,7 @@ export async function createPayment(_: Result, form: FormData): Promise<Result> 
       bank: s(form.get('bank')),
       reference: s(form.get('reference')),
       payment_date: s(form.get('payment_date')) ?? new Date().toISOString().slice(0, 10),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/vendors');
     return {};
   } catch (e: any) { return { error: e.message }; }
@@ -191,23 +199,21 @@ export async function createPayment(_: Result, form: FormData): Promise<Result> 
 
 export async function createProduct(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('products').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'products', {
       organization_id: orgId,
       name: String(form.get('name')).trim(),
       sku: s(form.get('sku')),
       category: s(form.get('category')),
       origin: s(form.get('origin')),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/settings'); revalidatePath('/containers');
     return {};
   } catch (e: any) { return { error: e.message }; }
 }
 
 export async function deleteProduct(id: string) {
-  const { supabase } = await scoped();
-  await supabase.from('products').delete().eq('id', id);
+  await withOrg(await scoped(), (db) => db.all('delete from products where id = $1', [id]));
   revalidatePath('/settings');
 }
 
@@ -215,8 +221,8 @@ export async function deleteProduct(id: string) {
 
 export async function createShipment(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('shipments').insert({
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => insert(db, 'shipments', {
       organization_id: orgId,
       bol_number: String(form.get('bol_number')).trim().toUpperCase(),
       vendor_id: s(form.get('vendor_id')),
@@ -224,8 +230,7 @@ export async function createShipment(_: Result, form: FormData): Promise<Result>
       origin_port: s(form.get('origin_port')),
       destination_port: s(form.get('destination_port')),
       eta_date: s(form.get('eta_date')),
-    });
-    if (error) return { error: error.message };
+    }));
     revalidatePath('/settings'); revalidatePath('/containers');
     return {};
   } catch (e: any) { return { error: e.message }; }
@@ -235,13 +240,11 @@ export async function createShipment(_: Result, form: FormData): Promise<Result>
 
 export async function updateOrganization(_: Result, form: FormData): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
-    const { error } = await supabase.from('organizations').update({
-      name: String(form.get('name')).trim(),
-      vat_number: s(form.get('vat_number')),
-      usd_rate: n(form.get('usd_rate')) ?? 3.75,
-    }).eq('id', orgId);
-    if (error) return { error: error.message };
+    const orgId = await scoped();
+    await withOrg(orgId, (db) => db.all(
+      'update organizations set name = $2, vat_number = $3, usd_rate = $4 where id = $1',
+      [orgId, String(form.get('name')).trim(), s(form.get('vat_number')), n(form.get('usd_rate')) ?? 3.75],
+    ));
     revalidatePath('/settings'); revalidatePath('/');
     return {};
   } catch (e: any) { return { error: e.message }; }
@@ -251,33 +254,32 @@ export async function updateOrganization(_: Result, form: FormData): Promise<Res
 
 export async function seedDemoData(): Promise<Result> {
   try {
-    const { supabase, orgId } = await scoped();
+    const orgId = await scoped();
+    await withOrg(orgId, async (db) => {
 
-    const { data: vendors, error: vErr } = await supabase.from('vendors').insert([
+    const vendors = await insertMany(db, 'vendors', [
       { organization_id: orgId, name: 'Bakrawy Produce', kind: 'supplier', country: 'Philippines', payment_terms_days: 30 },
       { organization_id: orgId, name: 'Agros Export', kind: 'supplier', country: 'Ecuador', payment_terms_days: 45 },
       { organization_id: orgId, name: 'CMA CGM', kind: 'shipping', country: 'France', payment_terms_days: 15 },
       { organization_id: orgId, name: 'Jusoor Al Arabia', kind: 'clearance', country: 'Saudi Arabia', payment_terms_days: 15 },
-    ]).select('id, name');
-    if (vErr) return { error: vErr.message };
+    ], 'id, name');
 
-    const vid = (name: string) => vendors?.find((v) => v.name === name)?.id ?? null;
+    const vid = (name: string) => vendors.find((v: any) => v.name === name)?.id ?? null;
 
-    const { data: products, error: pErr } = await supabase.from('products').insert([
+    const products = await insertMany(db, 'products', [
       { organization_id: orgId, name: 'Banana — Filipino 13kg', sku: 'BAN-PH-13', category: 'Banana', origin: 'Philippines' },
       { organization_id: orgId, name: 'Banana — Ecuador 18kg', sku: 'BAN-EC-18', category: 'Banana', origin: 'Ecuador' },
       { organization_id: orgId, name: 'Lemon — India 15kg', sku: 'LEM-IN-15', category: 'Lemon', origin: 'India' },
-    ]).select('id, sku');
-    if (pErr) return { error: pErr.message };
-    const pid = (sku: string) => products?.find((p) => p.sku === sku)?.id ?? null;
+    ], 'id, sku');
+    const pid = (sku: string) => products.find((p: any) => p.sku === sku)?.id ?? null;
 
-    const { data: shipment } = await supabase.from('shipments').insert({
+    const shipment = await insert(db, 'shipments', {
       organization_id: orgId, bol_number: 'CMDUSIN0492817', vendor_id: vid('Bakrawy Produce'),
       vessel_name: 'CMA CGM Jules Verne', origin_port: 'Davao', destination_port: 'Dammam',
       eta_date: '2026-03-04',
-    }).select('id').single();
+    });
 
-    const { data: containers, error: cErr } = await supabase.from('containers').insert([
+    const containers = await insertMany(db, 'containers', [
       { organization_id: orgId, container_number: 'SEGU9970606', shipment_id: shipment?.id,
         product_id: pid('BAN-PH-13'), vendor_id: vid('Bakrawy Produce'), origin: 'Philippines',
         destination_port: 'Dammam', cartons_received: 1556, weight_kg: 20228, stage: 'closed',
@@ -293,9 +295,8 @@ export async function seedDemoData(): Promise<Result> {
       { organization_id: orgId, container_number: 'FSCU5360035',
         product_id: pid('LEM-IN-15'), vendor_id: vid('Agros Export'), origin: 'India',
         destination_port: 'Dammam', cartons_received: 1800, weight_kg: 27000, stage: 'in_transit' },
-    ]).select('id, container_number');
-    if (cErr) return { error: cErr.message };
-    const cid = (nu: string) => containers?.find((c) => c.container_number === nu)?.id!;
+    ], 'id, container_number');
+    const cid = (nu: string) => containers.find((c: any) => c.container_number === nu)?.id!;
 
     const costRows: any[] = [];
     const addCosts = (container: string, goods: number, freight: number, clearance: number, ferm: number) => {
@@ -314,28 +315,27 @@ export async function seedDemoData(): Promise<Result> {
     addCosts('CGMU9345140', 29800, 11400, 7100, 3600);
     costRows.push({ organization_id: orgId, container_id: cid('FSCU5360035'), cost_type: 'goods', amount: 41200, vendor_id: vid('Agros Export'), entry_date: '2026-03-20' });
 
-    const { error: ceErr } = await supabase.from('cost_entries').insert(costRows);
-    if (ceErr) return { error: ceErr.message };
+    await insertMany(db, 'cost_entries', costRows);
 
-    const { error: seErr } = await supabase.from('sales_entries').insert([
+    await insertMany(db, 'sales_entries', [
       { organization_id: orgId, container_id: cid('SEGU9970606'), cartons_sold: 1478, unit_price: 53, customer_name: 'Riyadh Central Market', invoice_number: 'INV-2026-0141', sale_date: '2026-03-12' },
       { organization_id: orgId, container_id: cid('DFOU6162688'), cartons_sold: 900, unit_price: 54.5, customer_name: 'Dammam Wholesale', invoice_number: 'INV-2026-0147', sale_date: '2026-03-14' },
       { organization_id: orgId, container_id: cid('DFOU6162688'), cartons_sold: 520, unit_price: 49, customer_name: 'Qassim Distribution', invoice_number: 'INV-2026-0155', sale_date: '2026-03-19' },
       { organization_id: orgId, container_id: cid('CGMU9345140'), cartons_sold: 610, unit_price: 61, customer_name: 'Jeddah Retail Group', invoice_number: 'INV-2026-0162', sale_date: '2026-03-26' },
     ]);
-    if (seErr) return { error: seErr.message };
 
-    const { error: qErr } = await supabase.from('quality_events').insert([
+    await insertMany(db, 'quality_events', [
       { organization_id: orgId, container_id: cid('SEGU9970606'), event_type: 'insurance', damage_percent: 5, affected_cartons: 78, claim_received: 2000, inspected_by: 'Warehouse QC', notes: 'Bruising on upper tiers', event_date: '2026-03-05' },
       { organization_id: orgId, container_id: cid('DFOU6162688'), event_type: 'ripple', damage_percent: 8.6, affected_cartons: 134, claim_received: 0, inspected_by: 'Warehouse QC', notes: 'Cosmetic — moved to salvage', event_date: '2026-03-07' },
       { organization_id: orgId, container_id: cid('CGMU9345140'), event_type: 'insurance', damage_percent: 3.1, affected_cartons: 38, claim_received: 1450, inspected_by: 'Surveyor', event_date: '2026-03-20' },
     ]);
-    if (qErr) return { error: qErr.message };
 
-    await supabase.from('vendor_payments').insert([
+    await insertMany(db, 'vendor_payments', [
       { organization_id: orgId, vendor_id: vid('Bakrawy Produce'), amount: 69000, bank: 'Al Rajhi', reference: 'TT-88214', payment_date: '2026-03-15' },
       { organization_id: orgId, vendor_id: vid('CMA CGM'), amount: 18400, bank: 'Al Jazira', reference: 'TT-88230', payment_date: '2026-03-16' },
     ]);
+
+    });
 
     revalidatePath('/'); revalidatePath('/containers'); revalidatePath('/costs');
     revalidatePath('/sales'); revalidatePath('/quality'); revalidatePath('/vendors');

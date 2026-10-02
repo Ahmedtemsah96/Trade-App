@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import {
   updateOrganization, createProduct, deleteProduct, createShipment,
 } from '@/app/actions';
@@ -9,25 +10,24 @@ import SeedButton from '@/components/SeedButton';
 export const dynamic = 'force-dynamic';
 
 export default async function Settings() {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
+  const member = await requireMember();
 
-  const [{ data: member }, { data: products }, { data: shipments }, { data: vendors }] =
-    await Promise.all([
-      supabase.from('members').select('role, full_name, organizations(*)').eq('user_id', user!.id).single(),
-      supabase.from('products').select('*').order('name'),
-      supabase.from('shipments').select('*, vendors(name)').order('created_at', { ascending: false }),
-      supabase.from('vendors').select('id, name').order('name'),
-    ]);
-
-  const org = member?.organizations as any;
+  const [org, products, shipments, vendors] = await withOrg(member.orgId, (db) => Promise.all([
+    db.one('select * from organizations where id = $1', [member.orgId]),
+    db.all('select * from products order by name'),
+    db.all(`select s.*, v.name as vendor_name
+              from shipments s
+              left join vendors v on v.id = s.vendor_id
+             order by s.created_at desc`),
+    db.all('select id, name from vendors order by name'),
+  ]));
 
   return (
     <div className="mx-auto max-w-4xl space-y-12">
       <header>
         <h1 className="text-2xl font-semibold">Settings</h1>
         <p className="mt-1 text-sm text-ink-soft">
-          Signed in as {member?.full_name ?? user?.email} · {member?.role}
+          Signed in as {member.fullName ?? member.email} · {member.role}
         </p>
       </header>
 
@@ -122,7 +122,7 @@ export default async function Settings() {
                 {(shipments ?? []).map((s) => (
                   <tr key={s.id}>
                     <td className="td font-num">{s.bol_number}</td>
-                    <td className="td text-ink-soft">{(s.vendors as any)?.name ?? '—'}</td>
+                    <td className="td text-ink-soft">{s.vendor_name ?? '—'}</td>
                     <td className="td text-ink-soft">{s.vessel_name ?? '—'}</td>
                     <td className="td text-ink-soft">{s.origin_port ?? '—'} → {s.destination_port ?? '—'}</td>
                     <td className="td tnum font-num text-ink-soft">{s.eta_date ?? '—'}</td>

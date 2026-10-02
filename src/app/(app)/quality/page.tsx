@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { createQuality, deleteQuality } from '@/app/actions';
 import { AddPanel, Field, Select, DeleteButton } from '@/components/Form';
 import Empty from '@/components/Empty';
@@ -8,14 +9,16 @@ import { money, num, pct, label, QUALITY_TYPES } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function Quality() {
-  const supabase = createClient();
-  const [{ data: events }, { data: containers }, { data: pnl }] = await Promise.all([
-    supabase.from('quality_events')
-      .select('*, containers(container_number)')
-      .order('event_date', { ascending: false }).limit(200),
-    supabase.from('containers').select('id, container_number').order('container_number'),
-    supabase.from('container_pnl').select('id, container_number, cost_per_carton'),
-  ]);
+  const { orgId } = await requireMember();
+  const [events, containers, pnl] = await withOrg(orgId, (db) => Promise.all([
+    db.all(`select qe.*, c.container_number
+              from quality_events qe
+              join containers c on c.id = qe.container_id
+             order by qe.event_date desc, qe.created_at desc
+             limit 200`),
+    db.all('select id, container_number from containers order by container_number'),
+    db.all('select id, container_number, cost_per_carton from container_pnl'),
+  ]));
 
   const rows = events ?? [];
   const costPerCarton = new Map((pnl ?? []).map((p) => [p.id, Number(p.cost_per_carton ?? 0)]));
@@ -87,7 +90,7 @@ export default async function Quality() {
                     return (
                       <tr key={r.id}>
                         <td className="td tnum font-num text-ink-soft">{r.event_date}</td>
-                        <td className="td font-num">{(r.containers as any)?.container_number ?? '—'}</td>
+                        <td className="td font-num">{r.container_number ?? '—'}</td>
                         <td className="td">{label(QUALITY_TYPES, r.event_type)}</td>
                         <td className="td tnum text-right font-num">{num(r.affected_cartons)}</td>
                         <td className="td tnum text-right font-num">{pct(r.damage_percent)}</td>

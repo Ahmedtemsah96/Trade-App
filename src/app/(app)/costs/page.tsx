@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { createCost, deleteCost } from '@/app/actions';
 import { AddPanel, Field, Select, DeleteButton } from '@/components/Form';
 import Empty from '@/components/Empty';
@@ -7,16 +8,17 @@ import { money, label, COST_TYPES } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function Costs() {
-  const supabase = createClient();
-  const [{ data: entries }, { data: containers }, { data: vendors }] = await Promise.all([
-    supabase
-      .from('cost_entries')
-      .select('*, containers(container_number), vendors(name)')
-      .order('entry_date', { ascending: false })
-      .limit(300),
-    supabase.from('containers').select('id, container_number').order('container_number'),
-    supabase.from('vendors').select('id, name').order('name'),
-  ]);
+  const { orgId } = await requireMember();
+  const [entries, containers, vendors] = await withOrg(orgId, (db) => Promise.all([
+    db.all(`select ce.*, c.container_number, v.name as vendor_name
+              from cost_entries ce
+              join containers c on c.id = ce.container_id
+              left join vendors v on v.id = ce.vendor_id
+             order by ce.entry_date desc, ce.created_at desc
+             limit 300`),
+    db.all('select id, container_number from containers order by container_number'),
+    db.all('select id, name from vendors order by name'),
+  ]));
 
   const rows = entries ?? [];
   const total = rows.reduce((a, r) => a + Number(r.amount) * Number(r.fx_rate), 0);
@@ -74,9 +76,9 @@ export default async function Costs() {
                   {rows.map((r) => (
                     <tr key={r.id}>
                       <td className="td tnum font-num text-ink-soft">{r.entry_date}</td>
-                      <td className="td font-num">{(r.containers as any)?.container_number ?? '—'}</td>
+                      <td className="td font-num">{r.container_number ?? '—'}</td>
                       <td className="td">{label(COST_TYPES, r.cost_type)}</td>
-                      <td className="td text-ink-soft">{(r.vendors as any)?.name ?? '—'}</td>
+                      <td className="td text-ink-soft">{r.vendor_name ?? '—'}</td>
                       <td className="td text-micro text-ink-faint">{r.document_ref ?? '—'}</td>
                       <td className="td tnum text-right font-num">
                         {r.currency} {Number(r.amount).toLocaleString('en-US', { minimumFractionDigits: 2 })}

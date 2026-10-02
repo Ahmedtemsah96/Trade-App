@@ -1,4 +1,5 @@
-import { createClient } from '@/lib/supabase/server';
+import { requireMember } from '@/lib/auth';
+import { withOrg } from '@/lib/db';
 import { createContainer, deleteContainer } from '@/app/actions';
 import { AddPanel, Field, Select, DeleteButton } from '@/components/Form';
 import Empty from '@/components/Empty';
@@ -8,14 +9,13 @@ import { money, num, label, STAGES } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function Containers() {
-  const supabase = createClient();
-  const [{ data: rows }, { data: products }, { data: vendors }, { data: shipments }] =
-    await Promise.all([
-      supabase.from('container_pnl').select('*').order('created_at', { ascending: false }),
-      supabase.from('products').select('id, name').order('name'),
-      supabase.from('vendors').select('id, name').order('name'),
-      supabase.from('shipments').select('id, bol_number').order('created_at', { ascending: false }),
-    ]);
+  const { orgId } = await requireMember();
+  const [rows, products, vendors, shipments] = await withOrg(orgId, (db) => Promise.all([
+    db.all('select * from container_pnl order by created_at desc'),
+    db.all('select id, name from products order by name'),
+    db.all('select id, name from vendors order by name'),
+    db.all('select id, bol_number from shipments order by created_at desc'),
+  ]));
 
   const list = rows ?? [];
 

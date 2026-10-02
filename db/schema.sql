@@ -1,16 +1,17 @@
 -- =====================================================================
--- Agricultural Import ERP — multi-tenant schema
--- Run this once in Supabase → SQL Editor → New query → Run
+-- Container Ledger — multi-tenant schema (PostgreSQL 15+, e.g. Neon)
+-- Apply with `npm run db:setup`, or paste into the Neon SQL Editor and run.
+-- Safe to re-run.
 -- =====================================================================
 
-create extension if not exists "uuid-ossp";
+-- gen_random_uuid() is built into Postgres 13+, no extension needed.
 
 -- ---------------------------------------------------------------------
 -- Tenancy
 -- ---------------------------------------------------------------------
 
 create table if not exists organizations (
-  id          uuid primary key default uuid_generate_v4(),
+  id          uuid primary key default gen_random_uuid(),
   name        text not null,
   vat_number  text,
   base_currency text not null default 'SAR',
@@ -18,9 +19,19 @@ create table if not exists organizations (
   created_at  timestamptz not null default now()
 );
 
+-- Login accounts. Only the sign-in code touches this table; the app role
+-- used for business queries has no access to it.
+create table if not exists users (
+  id            uuid primary key default gen_random_uuid(),
+  email         text not null,
+  password_hash text not null,
+  created_at    timestamptz not null default now()
+);
+create unique index if not exists users_email_idx on users (lower(email));
+
 create table if not exists members (
-  id              uuid primary key default uuid_generate_v4(),
-  user_id         uuid not null unique references auth.users(id) on delete cascade,
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null unique references users(id) on delete cascade,
   organization_id uuid not null references organizations(id) on delete cascade,
   full_name       text,
   email           text,
@@ -31,53 +42,20 @@ create table if not exists members (
 
 create index if not exists members_org_idx on members(organization_id);
 
--- Returns the calling user's organization. STABLE so Postgres caches it per statement.
+-- The organization the current transaction acts for. The app sets it with
+-- set_config('app.org_id', ..., true) at the start of every transaction;
+-- unset means "no organization", so every policy below matches nothing.
 create or replace function current_org_id()
 returns uuid
-language sql stable security definer set search_path = public
-as $$ select organization_id from members where user_id = auth.uid() limit 1 $$;
-
-create or replace function current_role_name()
-returns text
-language sql stable security definer set search_path = public
-as $$ select role from members where user_id = auth.uid() limit 1 $$;
-
--- On signup: create the org (from metadata) and attach the user as admin.
-create or replace function handle_new_user()
-returns trigger
-language plpgsql security definer set search_path = public
-as $$
-declare new_org uuid;
-begin
-  insert into organizations (name, vat_number)
-  values (
-    coalesce(nullif(new.raw_user_meta_data->>'company_name',''), 'My company'),
-    nullif(new.raw_user_meta_data->>'vat_number','')
-  )
-  returning id into new_org;
-
-  insert into members (user_id, organization_id, full_name, email, role)
-  values (
-    new.id,
-    new_org,
-    coalesce(nullif(new.raw_user_meta_data->>'full_name',''), split_part(new.email,'@',1)),
-    new.email,
-    'admin'
-  );
-  return new;
-end $$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function handle_new_user();
+language sql stable
+as $$ select nullif(current_setting('app.org_id', true), '')::uuid $$;
 
 -- ---------------------------------------------------------------------
 -- Master data
 -- ---------------------------------------------------------------------
 
 create table if not exists vendors (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   name            text not null,
   kind            text not null default 'supplier'
@@ -93,7 +71,7 @@ create table if not exists vendors (
 create index if not exists vendors_org_idx on vendors(organization_id);
 
 create table if not exists products (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   name            text not null,
   sku             text,
@@ -108,7 +86,7 @@ create index if not exists products_org_idx on products(organization_id);
 -- ---------------------------------------------------------------------
 
 create table if not exists shipments (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   bol_number      text not null,
   vendor_id       uuid references vendors(id) on delete set null,
@@ -123,7 +101,7 @@ create table if not exists shipments (
 create index if not exists shipments_org_idx on shipments(organization_id);
 
 create table if not exists containers (
-  id               uuid primary key default uuid_generate_v4(),
+  id               uuid primary key default gen_random_uuid(),
   organization_id  uuid not null references organizations(id) on delete cascade,
   container_number text not null,
   shipment_id      uuid references shipments(id) on delete set null,
@@ -145,7 +123,7 @@ create index if not exists containers_org_idx on containers(organization_id);
 create index if not exists containers_shipment_idx on containers(shipment_id);
 
 create table if not exists cost_entries (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   container_id    uuid not null references containers(id) on delete cascade,
   cost_type       text not null
@@ -164,7 +142,7 @@ create index if not exists cost_entries_org_idx on cost_entries(organization_id)
 create index if not exists cost_entries_container_idx on cost_entries(container_id);
 
 create table if not exists quality_events (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   container_id    uuid not null references containers(id) on delete cascade,
   event_type      text not null default 'insurance'
@@ -181,7 +159,7 @@ create index if not exists quality_org_idx on quality_events(organization_id);
 create index if not exists quality_container_idx on quality_events(container_id);
 
 create table if not exists sales_entries (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   container_id    uuid not null references containers(id) on delete cascade,
   cartons_sold    integer not null,
@@ -198,7 +176,7 @@ create index if not exists sales_org_idx on sales_entries(organization_id);
 create index if not exists sales_container_idx on sales_entries(container_id);
 
 create table if not exists vendor_payments (
-  id              uuid primary key default uuid_generate_v4(),
+  id              uuid primary key default gen_random_uuid(),
   organization_id uuid not null references organizations(id) on delete cascade,
   vendor_id       uuid not null references vendors(id) on delete cascade,
   amount          numeric(14,2) not null,
@@ -224,6 +202,7 @@ select
   c.origin,
   c.cartons_received,
   c.arrival_date,
+  c.created_at,
   p.name  as product_name,
   v.name  as vendor_name,
   s.bol_number,
@@ -290,6 +269,25 @@ left join lateral (
 -- Row level security — this is what makes it multi-tenant
 -- ---------------------------------------------------------------------
 
+-- The app runs every business query as this role (SET LOCAL ROLE), not as
+-- the database owner. Owners and Neon's admin roles bypass row-level
+-- security; ledger_app does not, so the policies always apply to it.
+do $$
+begin
+  if not exists (select 1 from pg_roles where rolname = 'ledger_app') then
+    create role ledger_app nologin;
+  end if;
+end $$;
+grant ledger_app to current_user;
+
+grant usage on schema public to ledger_app;
+grant select, insert, update, delete on
+  organizations, members, vendors, products, shipments, containers,
+  cost_entries, quality_events, sales_entries, vendor_payments
+  to ledger_app;
+grant select on container_pnl, vendor_balances to ledger_app;
+revoke all on users from ledger_app;
+
 alter table organizations  enable row level security;
 alter table members        enable row level security;
 alter table vendors        enable row level security;
@@ -325,5 +323,5 @@ begin
   end loop;
 end $$;
 
--- Done. Every query from the browser is now scoped to the caller's organization
--- by the database itself, not by application code.
+-- Done. Every business query is scoped to the caller's organization by the
+-- database itself, not by application code.

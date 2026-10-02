@@ -22,47 +22,61 @@ before and files went missing.
 
 ## 1. Create the database
 
-1. Go to supabase.com, sign up, click **New project**.
-2. Name it, set a database password (save it somewhere), pick the region closest to you —
-   **Frankfurt** or **Singapore** from Saudi Arabia.
-3. Wait about two minutes for it to finish provisioning.
-4. Open **SQL Editor** → **New query**.
-5. Open `supabase/schema.sql` from this folder, copy all of it, paste it in, click **Run**.
+1. Go to neon.tech, sign up (the free plan is enough), click **New project**.
+2. Name it, pick Postgres 16 or newer, and the region closest to you —
+   **Frankfurt** (AWS eu-central-1) from Saudi Arabia.
+3. On the project dashboard click **Connect** and copy the connection string. It looks like
+   `postgresql://neondb_owner:...@ep-xxxx-pooler.eu-central-1.aws.neon.tech/neondb?sslmode=require`.
 
-You should see "Success. No rows returned." That one script creates every table, the container
-P&L view, the vendor balance view, the signup trigger and the row-level security policies.
-
-### What the security policies do
-
-Every table carries an `organization_id`, and each policy says a row is only visible when that
-column matches the caller's own organization. The check runs inside Postgres, not in the app
-code, so a bug in a page cannot leak one customer's containers to another. This is the part that
-makes it safe to sell the same instance to several importers.
+Keep this string private: it is the password to your whole database.
 
 ---
 
 ## 2. Connect it
 
-In Supabase: **Project Settings** → **API**. Copy the **Project URL** and the **anon public** key.
-
 Create a file named exactly `.env.local` in this folder:
 
 ```
-NEXT_PUBLIC_SUPABASE_URL=https://your-project.supabase.co
-NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGciOi...
+DATABASE_URL=postgresql://neondb_owner:...@ep-xxxx-pooler.eu-central-1.aws.neon.tech/neondb?sslmode=require
+AUTH_SECRET=paste-a-random-string-here
 ```
 
-There is a template at `.env.local.example` you can rename.
+There is a template at `.env.local.example` you can rename. `AUTH_SECRET` signs the login
+cookies; make one with:
 
-The anon key is safe in the browser — it is designed to be public, and the security policies from
-step 1 are what actually restrict access. Never put the `service_role` key in this file.
+```
+node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
+```
+
+Then create the tables:
+
+```
+npm install
+npm run db:setup
+```
+
+You should see "Schema applied." That one script (`db/schema.sql`) creates every table, the
+container P&L view, the vendor balance view and the row-level security policies. It is safe to
+run again. If you prefer, you can instead paste `db/schema.sql` into Neon's **SQL Editor** and
+click **Run**.
+
+### What the security policies do
+
+Every table carries an `organization_id`, and each policy says a row is only visible when that
+column matches the organization the request is acting for. The app runs every query as a
+restricted database role (`ledger_app`) that cannot switch those policies off, so the check
+runs inside Postgres, not in the app code: a bug in a page cannot leak one customer's
+containers to another. This is the part that makes it safe to sell the same instance to
+several importers.
+
+Both values in `.env.local` are secrets and stay on the server. Never commit `.env.local`
+(it is already in `.gitignore`).
 
 ---
 
 ## 3. Run it
 
 ```
-npm install
 npm run dev
 ```
 
@@ -110,7 +124,7 @@ git push -u origin main
 ```
 
 Then at vercel.com: **Add New** → **Project** → import the repo. Add the same two environment
-variables from step 2 in the Vercel dialog, and deploy. Pushes to `main` redeploy automatically.
+variables from step 2 (`DATABASE_URL` and `AUTH_SECRET`) in the Vercel dialog, and deploy. Pushes to `main` redeploy automatically.
 
 ---
 
@@ -122,22 +136,22 @@ that contains `package.json` and check with `dir` (Windows) or `ls`.
 **`'next' is not recognized`** — `npm install` has not finished successfully in this folder. Run
 it again and read the output for the real error.
 
-**"Connect your database first" on the login screen** — `.env.local` is missing, misnamed, or the
-dev server was not restarted after you created it. Stop it with Ctrl+C and run `npm run dev` again.
+**"Connect your database first" on the login screen** — `.env.local` is missing, misnamed, lacks
+one of the two values, or the dev server was not restarted after you created it. Stop it with
+Ctrl+C and run `npm run dev` again.
 
-**Signed in but every page is empty** — the schema script did not finish. Re-run it in the SQL
-Editor and check for a red error. If your Supabase project predates Postgres 15, the
-`security_invoker` views will fail; create a new project rather than working around it.
+**`relation "users" does not exist`** or **`role "ledger_app" does not exist`** — the schema has
+not been applied to this database. Run `npm run db:setup`.
 
-**`new row violates row-level security policy`** — your account has no row in `members`. That
-happens if the signup trigger was not in place when you registered. Re-run the schema, then sign
-up with a fresh email.
+**`permission denied to grant role`** while applying the schema — the connection string is for
+a role that cannot create roles. Use the project's owner role (`neondb_owner` on Neon).
 
----
+**Signup says "Something went wrong"** — the app cannot reach the database. Check that
+`DATABASE_URL` is copied in full, including `?sslmode=require`.
 
 ## Not built yet
 
 Worth knowing before you show it to a customer: inviting teammates has no interface yet (roles
-exist in the database and are enforceable, but you would add members by hand in Supabase),
-there is no ZATCA e-invoice submission, no bank reconciliation, no PDF export, and no billing
+exist in the database and are enforceable, but adding a teammate today means writing rows into `users` and `members` directly),
+there is no ZATCA e-invoice submission, no bank reconciliation, no PDF export, no password reset or email verification, and no billing
 or subscription handling.

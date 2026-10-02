@@ -1,22 +1,13 @@
 import Nav from '@/components/Nav';
-import { createClient } from '@/lib/supabase/server';
-import { redirect } from 'next/navigation';
+import { requireMember } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const supabase = createClient();
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) redirect('/login');
+  const member = await requireMember();
 
-  const { data: member } = await supabase
-    .from('members')
-    .select('full_name, email, role, organizations(name)')
-    .eq('user_id', user.id)
-    .single();
-
-  const company = (member?.organizations as any)?.name ?? 'Workspace';
-  const person = `${member?.full_name ?? user.email} · ${member?.role ?? ''}`;
+  const company = member.company ?? 'Workspace';
+  const person = `${member.fullName ?? member.email} · ${member.role}`;
 
   return (
     <div className="flex min-h-screen">
