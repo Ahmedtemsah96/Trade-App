@@ -1,152 +1,102 @@
-import React, { useState, useEffect } from 'react';
-import { query, insert, delete_ } from '../db';
-
-interface Container {
-  id: string;
-  container_number: string;
-  cartons_received: number;
-  origin?: string;
-  destination_port?: string;
-  stage?: string;
-  notes?: string;
-  created_at?: string;
-}
+import { useLedger, update, uid, today } from '../store';
+import { pnlRows } from '../ledger';
+import { money, num, label, STAGES } from '../format';
+import { AddPanel, Field, Select, DeleteButton, Empty, MarginBar, Header, fdStr, fdNum } from '../components';
 
 export default function Containers() {
-  const [containers, setContainers] = useState<Container[]>([]);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
-    container_number: '',
-    cartons_received: '',
-    origin: '',
-    destination_port: '',
-    notes: '',
-  });
+  const ledger = useLedger();
+  const rows = pnlRows(ledger).sort((a, b) => b.created_at.localeCompare(a.created_at));
 
-  useEffect(() => {
-    loadContainers();
-  }, []);
+  function create(f: FormData) {
+    const number = String(f.get('container_number')).trim().toUpperCase();
+    if (ledger.containers.some((c) => c.container_number === number)) return `${number} is already registered.`;
+    update((s) => ({ ...s, containers: [...s.containers, {
+      id: uid(), container_number: number, product_id: fdStr(f, 'product_id'), vendor_id: fdStr(f, 'vendor_id'),
+      shipment_id: fdStr(f, 'shipment_id'), origin: fdStr(f, 'origin'), destination_port: fdStr(f, 'destination_port'),
+      cartons_received: fdNum(f, 'cartons_received') ?? 0, weight_kg: fdNum(f, 'weight_kg'),
+      stage: String(f.get('stage') || 'in_transit'), arrival_date: fdStr(f, 'arrival_date'), created_at: new Date().toISOString(),
+    }] }));
+  }
 
-  const loadContainers = async () => {
-    const data = await query<Container>('containers');
-    setContainers(data.sort((a, b) => new Date(b.created_at || '').getTime() - new Date(a.created_at || '').getTime()));
-  };
+  const setStage = (id: string, stage: string) =>
+    update((s) => ({ ...s, containers: s.containers.map((c) => (c.id === id ? { ...c, stage } : c)) }));
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const newContainer: Container = {
-      id: crypto.randomUUID(),
-      container_number: form.container_number.toUpperCase(),
-      cartons_received: parseInt(form.cartons_received) || 0,
-      origin: form.origin,
-      destination_port: form.destination_port,
-      stage: 'in_transit',
-      notes: form.notes,
-      created_at: new Date().toISOString(),
-    };
-    await insert('containers', newContainer);
-    loadContainers();
-    setForm({ container_number: '', cartons_received: '', origin: '', destination_port: '', notes: '' });
-    setShowForm(false);
-  };
-
-  const handleDelete = async (id: string) => {
-    if (confirm('Delete this container?')) {
-      await delete_('containers', id);
-      loadContainers();
-    }
-  };
+  // Costs, sales and quality events belong to the container, so they go with it.
+  const remove = (id: string) => update((s) => ({
+    ...s,
+    containers: s.containers.filter((c) => c.id !== id),
+    costs: s.costs.filter((x) => x.container_id !== id),
+    sales: s.sales.filter((x) => x.container_id !== id),
+    quality: s.quality.filter((x) => x.container_id !== id),
+  }));
 
   return (
-    <div>
-      <h1>Containers</h1>
-      <p className="subtitle">Each container opens its own cost centre. Everything you post later attaches to one of these.</p>
+    <div className="mx-auto max-w-6xl">
+      <Header title="Containers">
+        Each container opens its own cost centre. Everything you post later attaches to one of these.
+      </Header>
 
-      {!showForm ? (
-        <button onClick={() => setShowForm(true)}>Register container</button>
+      <AddPanel onSubmit={create} label="Register container" title="New container">
+        <Field name="container_number" label="Container number" required placeholder="SEGU9970606" />
+        <Select name="product_id" label="Product" placeholder="Not set" options={ledger.products.map((p) => [p.id, p.name])} />
+        <Select name="vendor_id" label="Supplier" placeholder="Not set" options={ledger.vendors.map((v) => [v.id, v.name])} />
+        <Select name="shipment_id" label="Bill of lading" placeholder="Not set" options={ledger.shipments.map((s) => [s.id, s.bol_number])} />
+        <Field name="origin" label="Origin" placeholder="Philippines" />
+        <Field name="destination_port" label="Discharge port" placeholder="Dammam" />
+        <Field name="cartons_received" label="Cartons received" type="number" min="0" required />
+        <Field name="weight_kg" label="Net weight (kg)" type="number" step="0.01" />
+        <Field name="arrival_date" label="Arrival date" type="date" defaultValue={today()} />
+        <Select name="stage" label="Stage" defaultValue="in_transit" options={STAGES} />
+      </AddPanel>
+
+      {rows.length === 0 ? (
+        <Empty title="No containers registered" hint="Register the first one to start collecting costs against it." />
       ) : (
-        <form onSubmit={handleSubmit} style={{ background: '#f9f9f9', padding: '20px', borderRadius: '8px', marginBottom: '20px' }}>
-          <h3>New container</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-            <div className="form-group">
-              <label>Container number</label>
-              <input
-                required
-                placeholder="SEGU9970606"
-                value={form.container_number}
-                onChange={(e) => setForm({ ...form, container_number: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Cartons received</label>
-              <input
-                type="number"
-                value={form.cartons_received}
-                onChange={(e) => setForm({ ...form, cartons_received: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Origin</label>
-              <input
-                value={form.origin}
-                onChange={(e) => setForm({ ...form, origin: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Destination port</label>
-              <input
-                value={form.destination_port}
-                onChange={(e) => setForm({ ...form, destination_port: e.target.value })}
-              />
-            </div>
-          </div>
-          <div className="form-group">
-            <label>Notes</label>
-            <textarea
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              style={{ height: '80px' }}
-            />
-          </div>
-          <button type="submit">Save container</button>
-          <button type="button" className="secondary" onClick={() => setShowForm(false)} style={{ marginLeft: '10px' }}>
-            Cancel
-          </button>
-        </form>
+        <div className="panel overflow-x-auto">
+          <table className="w-full min-w-[900px]">
+            <thead>
+              <tr>
+                <th className="th">Container</th><th className="th">Supplier</th><th className="th">Stage</th>
+                <th className="th text-right">Cartons</th><th className="th text-right">Landed cost</th>
+                <th className="th text-right">Revenue</th><th className="th text-right">Net</th>
+                <th className="th">Margin</th><th className="th" />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => {
+                const m = r.total_revenue > 0 ? (r.net_profit / r.total_revenue) * 100 : 0;
+                return (
+                  <tr key={r.id}>
+                    <td className="td">
+                      <span className="font-num">{r.container_number}</span>
+                      <span className="block text-micro text-ink-faint">
+                        {r.product_name ?? 'No product'}{r.bol_number ? ` · BoL ${r.bol_number}` : ''}
+                      </span>
+                    </td>
+                    <td className="td text-ink-soft">{r.vendor_name ?? '—'}</td>
+                    <td className="td">
+                      <select aria-label={`Stage of ${r.container_number}`} value={r.stage}
+                        onChange={(e) => setStage(r.id, e.target.value)}
+                        className="rounded-sm border border-paper-rule bg-white px-2 py-0.5 text-micro text-ink-soft">
+                        {STAGES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </td>
+                    <td className="td tnum text-right font-num">{num(r.cartons_sold)}/{num(r.cartons_received)}</td>
+                    <td className="td tnum text-right font-num">{money(r.total_cost)}</td>
+                    <td className="td tnum text-right font-num">{money(r.total_revenue)}</td>
+                    <td className={`td tnum text-right font-num ${r.net_profit >= 0 ? 'text-sage' : 'text-clay'}`}>{money(r.net_profit)}</td>
+                    <td className="td">{r.total_revenue > 0 ? <MarginBar pct={m} /> : <span className="text-micro text-ink-faint">—</span>}</td>
+                    <td className="td text-right">
+                      <DeleteButton onDelete={() => remove(r.id)}
+                        confirmText={`Remove ${r.container_number}? Its costs, sales and quality events go with it.`} />
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       )}
-
-      <table>
-        <thead>
-          <tr>
-            <th>Container</th>
-            <th>Cartons</th>
-            <th>Origin</th>
-            <th>Destination</th>
-            <th>Stage</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {containers.map((c) => (
-            <tr key={c.id}>
-              <td><strong>{c.container_number}</strong></td>
-              <td>{c.cartons_received}</td>
-              <td>{c.origin || '—'}</td>
-              <td>{c.destination_port || '—'}</td>
-              <td>{c.stage || 'in_transit'}</td>
-              <td>
-                <button
-                  className="danger"
-                  style={{ padding: '4px 8px', fontSize: '12px' }}
-                  onClick={() => handleDelete(c.id)}
-                >
-                  Remove
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

@@ -1,193 +1,100 @@
-import React, { useState, useEffect } from 'react';
-import { query, insert, delete_ } from '../db';
-
-interface SalesEntry {
-  id: string;
-  container_id: string;
-  cartons_sold: number;
-  unit_price: number;
-  amount: number;
-  customer_name?: string;
-  invoice_number?: string;
-  vat_amount: number;
-  sale_date?: string;
-  notes?: string;
-  created_at?: string;
-}
-
-interface Container {
-  id: string;
-  container_number: string;
-}
+import { useLedger, update, uid, today } from '../store';
+import { money, num } from '../format';
+import { AddPanel, Field, Select, DeleteButton, Empty, Stat, Header, fdStr, fdNum } from '../components';
 
 export default function Sales() {
-  const [sales, setSales] = useState<SalesEntry[]>([]);
-  const [containers, setContainers] = useState<Container[]>([]);
-  const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({
-    container_id: '',
-    cartons_sold: '',
-    unit_price: '',
-    customer_name: '',
-    invoice_number: '',
-    vat_amount: '',
-    notes: '',
-  });
+  const ledger = useLedger();
+  const container = new Map(ledger.containers.map((c) => [c.id, c.container_number]));
+  const rows = [...ledger.sales].sort((a, b) => b.sale_date.localeCompare(a.sale_date));
+  const revenue = rows.reduce((a, r) => a + r.amount, 0);
+  const cartons = rows.reduce((a, r) => a + r.cartons_sold, 0);
+  const vat = rows.reduce((a, r) => a + r.vat_amount, 0);
 
-  useEffect(() => {
-    loadData();
-  }, []);
-
-  const loadData = async () => {
-    const [salesData, containersData] = await Promise.all([
-      query<SalesEntry>('sales_entries'),
-      query<Container>('containers'),
-    ]);
-    setSales(salesData.sort((a, b) => new Date(b.sale_date || '').getTime() - new Date(a.sale_date || '').getTime()).slice(0, 300));
-    setContainers(containersData.sort((a, b) => a.container_number.localeCompare(b.container_number)));
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const cartons = parseFloat(form.cartons_sold) || 0;
-    const price = parseFloat(form.unit_price) || 0;
-    const newSale: SalesEntry = {
-      id: crypto.randomUUID(),
-      container_id: form.container_id,
-      cartons_sold: cartons,
-      unit_price: price,
-      amount: cartons * price,
-      customer_name: form.customer_name,
-      invoice_number: form.invoice_number,
-      vat_amount: parseFloat(form.vat_amount) || 0,
-      sale_date: new Date().toISOString().split('T')[0],
-      notes: form.notes,
-      created_at: new Date().toISOString(),
-    };
-    await insert('sales_entries', newSale);
-    loadData();
-    setForm({ container_id: '', cartons_sold: '', unit_price: '', customer_name: '', invoice_number: '', vat_amount: '', notes: '' });
-    setShowForm(false);
-  };
+  function create(f: FormData) {
+    const cartonsSold = fdNum(f, 'cartons_sold') ?? 0;
+    const price = fdNum(f, 'unit_price') ?? 0;
+    if (!(cartonsSold > 0)) return 'Enter the number of cartons sold.';
+    update((s) => ({ ...s, sales: [...s.sales, {
+      id: uid(), container_id: String(f.get('container_id')), cartons_sold: cartonsSold, unit_price: price,
+      amount: Math.round(cartonsSold * price * 100) / 100, customer_name: fdStr(f, 'customer_name'),
+      invoice_number: fdStr(f, 'invoice_number'), vat_amount: fdNum(f, 'vat_amount') ?? 0,
+      sale_date: fdStr(f, 'sale_date') ?? today(), notes: fdStr(f, 'notes'),
+    }] }));
+  }
 
   return (
-    <div>
-      <h1>Sales</h1>
-      <p className="subtitle">Cartons out, price, customer, invoice, output VAT.</p>
+    <div className="mx-auto max-w-6xl">
+      <Header title="Sales">
+        Record what left the warehouse and at what price. Revenue posts straight to the container it came out of.
+      </Header>
 
-      {!showForm ? (
-        <button onClick={() => setShowForm(true)}>Add sale</button>
-      ) : (
-        <form onSubmit={handleSubmit} style={{ background: '#f9f9f9', padding: '20px', borderRadius: '8px', marginBottom: '20px' }}>
-          <h3>New sale entry</h3>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '15px' }}>
-            <div className="form-group">
-              <label>Container</label>
-              <select
-                required
-                value={form.container_id}
-                onChange={(e) => setForm({ ...form, container_id: e.target.value })}
-              >
-                <option value="">Select container</option>
-                {containers.map((c) => (
-                  <option key={c.id} value={c.id}>{c.container_number}</option>
-                ))}
-              </select>
-            </div>
-            <div className="form-group">
-              <label>Cartons sold</label>
-              <input
-                type="number"
-                required
-                value={form.cartons_sold}
-                onChange={(e) => setForm({ ...form, cartons_sold: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Unit price (SAR)</label>
-              <input
-                type="number"
-                required
-                step="0.01"
-                value={form.unit_price}
-                onChange={(e) => setForm({ ...form, unit_price: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Customer</label>
-              <input
-                value={form.customer_name}
-                onChange={(e) => setForm({ ...form, customer_name: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>Invoice number</label>
-              <input
-                value={form.invoice_number}
-                onChange={(e) => setForm({ ...form, invoice_number: e.target.value })}
-              />
-            </div>
-            <div className="form-group">
-              <label>VAT amount (SAR)</label>
-              <input
-                type="number"
-                step="0.01"
-                value={form.vat_amount}
-                onChange={(e) => setForm({ ...form, vat_amount: e.target.value })}
-              />
-            </div>
-          </div>
-          <div className="form-group">
-            <label>Notes</label>
-            <textarea
-              value={form.notes}
-              onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              style={{ height: '80px' }}
-            />
-          </div>
-          <button type="submit">Save sale</button>
-          <button type="button" className="secondary" onClick={() => setShowForm(false)} style={{ marginLeft: '10px' }}>
-            Cancel
-          </button>
-        </form>
+      {rows.length > 0 && (
+        <section className="mb-8 grid grid-cols-1 gap-6 border-y sm:grid-cols-3 border-paper-rule py-6">
+          <Stat label="Revenue booked" value={money(revenue)} />
+          <Stat label="Cartons sold" value={num(cartons)} sub={cartons ? `${money(revenue / cartons)} average` : undefined} />
+          <Stat label="Output VAT" value={money(vat)} />
+        </section>
       )}
 
-      <table>
-        <thead>
-          <tr>
-            <th>Date</th>
-            <th>Container</th>
-            <th>Cartons</th>
-            <th>Price/carton</th>
-            <th>Total</th>
-            <th>Customer</th>
-            <th>Invoice</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          {sales.map((s) => (
-            <tr key={s.id}>
-              <td>{s.sale_date || '—'}</td>
-              <td>{s.container_id}</td>
-              <td>{s.cartons_sold}</td>
-              <td>SAR {s.unit_price.toFixed(2)}</td>
-              <td>SAR {s.amount.toFixed(0)}</td>
-              <td>{s.customer_name || '—'}</td>
-              <td>{s.invoice_number || '—'}</td>
-              <td>
-                <button
-                  className="danger"
-                  style={{ padding: '4px 8px', fontSize: '12px' }}
-                  onClick={() => { delete_('sales_entries', s.id); loadData(); }}
-                >
-                  Remove
-                </button>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      {ledger.containers.length === 0 ? (
+        <Empty title="Register a container first" hint="A sale has to come out of a container so the margin can be worked out." />
+      ) : (
+        <>
+          <AddPanel onSubmit={create} label="Record sale" title="New sale">
+            <Select name="container_id" label="Container" required placeholder="Select container"
+              options={ledger.containers.map((c) => [c.id, c.container_number])} />
+            <Field name="cartons_sold" label="Cartons sold" type="number" min="1" required />
+            <Field name="unit_price" label="Price per carton (SAR)" type="number" step="0.01" required />
+            <Field name="customer_name" label="Customer" placeholder="Riyadh Central Market" />
+            <Field name="invoice_number" label="Invoice number" placeholder="INV-2026-0141" />
+            <Field name="vat_amount" label="Output VAT (SAR)" type="number" step="0.01" defaultValue="0" />
+            <Field name="sale_date" label="Sale date" type="date" defaultValue={today()} />
+            <Field name="notes" label="Note" placeholder="Optional" />
+          </AddPanel>
+
+          {rows.length === 0 ? (
+            <Empty title="No sales recorded" hint="Margin stays blank until the first sale is posted." />
+          ) : (
+            <div className="panel overflow-x-auto">
+              <table className="w-full min-w-[760px]">
+                <thead>
+                  <tr>
+                    <th className="th">Date</th><th className="th">Container</th><th className="th">Customer</th>
+                    <th className="th">Invoice</th><th className="th text-right">Cartons</th>
+                    <th className="th text-right">Unit price</th><th className="th text-right">Revenue</th><th className="th" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => (
+                    <tr key={r.id}>
+                      <td className="td tnum font-num text-ink-soft">{r.sale_date}</td>
+                      <td className="td font-num">{container.get(r.container_id) ?? '—'}</td>
+                      <td className="td">{r.customer_name ?? '—'}</td>
+                      <td className="td font-num text-micro text-ink-faint">{r.invoice_number ?? '—'}</td>
+                      <td className="td tnum text-right font-num">{num(r.cartons_sold)}</td>
+                      <td className="td tnum text-right font-num">{money(r.unit_price)}</td>
+                      <td className="td tnum text-right font-num font-medium">{money(r.amount)}</td>
+                      <td className="td text-right">
+                        <DeleteButton confirmText="Remove this sale?"
+                          onDelete={() => update((s) => ({ ...s, sales: s.sales.filter((x) => x.id !== r.id) }))} />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+                <tfoot>
+                  <tr>
+                    <td className="td font-medium" colSpan={4}>Total</td>
+                    <td className="td tnum text-right font-num font-semibold">{num(cartons)}</td>
+                    <td className="td" />
+                    <td className="td tnum text-right font-num font-semibold">{money(revenue)}</td>
+                    <td className="td" />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }
