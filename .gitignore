@@ -1,8 +1,8 @@
-node_modules
-.next
-out
+node_modules/
+dist/
 .env.local
-.env
 .DS_Store
 *.log
+.vscode/
+.idea/
 *.tsbuildinfo
